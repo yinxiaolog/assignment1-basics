@@ -1,13 +1,13 @@
 import collections
-import regex as re
-from concurrent.futures import ProcessPoolExecutor
 import time
-import cProfile
-from typing import Iterable, Iterator
 from pathlib import Path
 import json
 import os
 import pickle
+from concurrent.futures import ProcessPoolExecutor
+import cProfile
+from typing import Iterable, Iterator
+import regex as re
 import numpy as np
 from rich.progress import Progress, track
 
@@ -106,21 +106,18 @@ def train_bpe(
     corpus = collections.defaultdict(int)
     
 
-    with Progress() as progress:
-        with open(input_path, "rb") as f:
-            boundaries = find_chunk_boundaries(f, num_processes, endoftext.encode("utf-8"))
-            task = progress.add_task("[green]Pre-tokenizer...", total=(len(boundaries) -1))
-            for start, end in zip(boundaries[:-1], boundaries[1:]):
-                f.seek(start)
-                chunk = f.read(end - start).decode("utf-8", errors="ignore")
-                pat = "|".join([re.escape(st) for st in special_tokens])
-                docs = re.split(pat, chunk)
-                pre_token, cor = pre_tokenization(docs)
-                for k, v in pre_token.items():
-                    pre_tokens[k] += v
-                for k, v in cor.items():
-                    corpus[k] += v
-                progress.update(task, advance=1)
+    with open(input_path, "rb") as f:
+        boundaries = find_chunk_boundaries(f, num_processes, endoftext.encode("utf-8"))
+        for start, end in zip(boundaries[:-1], boundaries[1:]):
+            f.seek(start)
+            chunk = f.read(end - start).decode("utf-8", errors="ignore")
+            pat = "|".join([re.escape(st) for st in special_tokens])
+            docs = re.split(pat, chunk)
+            pre_token, cor = pre_tokenization(docs)
+            for k, v in pre_token.items():
+                pre_tokens[k] += v
+            for k, v in cor.items():
+                corpus[k] += v
 
     for i in track(range(vocab_size - 256 - len(special_tokens)), description="Merging"):
         start = len(special_tokens) + 256
@@ -321,10 +318,10 @@ def tokenizer_experiments_c(num_sample=10):
 
 
 def tokenizer_experiments_d(num_sample=10):
-    ts_file = "/data2/yxl/opt/code/cs336/assignment1-basics/data/TinyStoriesV2-GPT4-train.txt"
-    ts_valid ="/data2/yxl/opt/code/cs336/assignment1-basics/data/TinyStoriesV2-GPT4-valid.txt"
-    owt_file = "/data2/yxl/opt/code/cs336/assignment1-basics/data/owt_train.txt"
-    owt_valid = "/data2/yxl/opt/code/cs336/assignment1-basics/data/owt_train.txt"
+    ts_file = "/opt/dataset/cs336/assignment1-basics/TinyStoriesV2-GPT4-train.txt"
+    ts_valid ="/opt/dataset/cs336/assignment1-basics/TinyStoriesV2-GPT4-valid.txt"
+    owt_file = "/opt/dataset/cs336/assignment1-basics/owt_train.txt"
+    owt_valid = "/opt/dataset/cs336/assignment1-basics/owt_train.txt"
     ts_tokenizer = load_tokenizer(ts_file)
     owt_tokenizer = load_tokenizer(owt_file)
     ts_train_encoded = encode_file(ts_file, ts_tokenizer)
@@ -342,12 +339,11 @@ if __name__ == "__main__":
     # profile = cProfile.Profile()
     # profile.enable()
     train(
-        "/data2/yxl/opt/code/cs336/assignment1-basics/data/TinyStoriesV2-GPT4-train.txt",
+        "/opt/dataset/cs336/assignment1-basics/TinyStoriesV2-GPT4-train.txt",
         vocab_size=10000,
     )
     train(
-        "/data2/yxl/opt/code/cs336/assignment1-basics/data/owt_train.txt", vocab_size=32000
+        "/opt/dataset/cs336/assignment1-basics/owt_train.txt", vocab_size=32000
     )
     # profile.disable()
     # profile.print_stats(sort="time")
-
