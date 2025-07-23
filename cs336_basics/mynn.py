@@ -55,11 +55,11 @@ class RMSNorm(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         in_dtype = x.dtype
-        rms = torch.sum(x ** 2, -1, keepdim=True) / self.d_model + self.eps
+        rms = torch.sum(x**2, -1, keepdim=True) / self.d_model + self.eps
         rms = torch.sqrt(rms)
         result = x / rms * self.g
         return result.to(in_dtype)
-    
+
 
 class SwiGLU(nn.Module):
     def __init__(self, d_model: int, d_ff: int, device=None, dtype=None):
@@ -81,3 +81,52 @@ class SwiGLU(nn.Module):
         return x / (1 + torch.exp(-x))
 
 
+class Softmax(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x: torch.Tensor, dim: int) -> torch.Tensor:
+        x_max = torch.max(x, dim=dim, keepdim=True).values
+        out = x - x_max
+        out = torch.exp(out)
+        return out / torch.sum(out, dim=dim, keepdim=True)
+
+
+class Attention(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.softmax = Softmax()
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        out = q @ k.mT
+        out = out / (k.shape[-1] ** 0.5)
+        if mask is not None:
+            out.masked_fill_(~mask, -float("inf"))
+        out = self.softmax(out, dim=-1)
+        return out @ v
+
+
+class CausalMultiHeadSelfAttention(nn.Module):
+    def __init__(self, d_model: int, num_heads: int):
+        super().__init__()
+        self.attention = Attention()
+        self.w_q = Linear(d_model, d_model)
+        self.w_k = Linear(d_model, d_model)
+        self.w_v = Linear(d_model, d_model)
+        self.w_o = Linear(d_model, d_model)
+        mask = torch.tril(torch.ones(d_model, d_model)).bool()
+        self.mask = mask
+
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        q = x @ self.w_q
+        k = x @ self.w_k
+        v = x @ self.w_v
+        atten = self.attention(q, k, v, self.mask)
+        return atten @ self.w_o
