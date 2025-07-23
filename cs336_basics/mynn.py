@@ -135,14 +135,14 @@ class RoPE(nn.Module):
         sin_theta = math.sin(theta)
         cos_theta = math.cos(theta)
         return torch.tensor([[cos_theta, -sin_theta], [sin_theta, cos_theta]])
-    
+
     def r_i(self, i: int, d: int, theta: float) -> torch.Tensor:
         r = torch.zeros(d, d, dtype=torch.float32)
         for k in range(0, d, 2):
-            r[k: k + 2, k: k + 2] = self.r_ik(i, k / 2, d, theta)
+            r[k : k + 2, k : k + 2] = self.r_ik(i, k / 2, d, theta)
         return r
-    
-    
+
+
 class Softmax(nn.Module):
     def __init__(self):
         super().__init__()
@@ -166,6 +166,7 @@ class Attention(nn.Module):
         v: torch.Tensor,
         mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        print(q.shape, k.shape, v.shape, mask.shape)
         out = q @ k.mT
         out = out / (k.shape[-1] ** 0.5)
         if mask is not None:
@@ -177,18 +178,31 @@ class Attention(nn.Module):
 class CausalMultiHeadSelfAttention(nn.Module):
     def __init__(self, d_model: int, num_heads: int):
         super().__init__()
+        self.num_heads = num_heads
+        assert (
+            d_model % self.num_heads == 0
+        ), f"d_model does not match num_heads, d_model={x.shape[-1]}, num_heads={self.num_heads}"
+        self.head_dim = d_model // num_heads
         self.attention = Attention()
         self.w_q = Linear(d_model, d_model)
         self.w_k = Linear(d_model, d_model)
         self.w_v = Linear(d_model, d_model)
         self.w_o = Linear(d_model, d_model)
-        mask = torch.tril(torch.ones(d_model, d_model)).bool()
-        self.mask = mask
-
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        q = x @ self.w_q
-        k = x @ self.w_k
-        v = x @ self.w_v
-        atten = self.attention(q, k, v, self.mask)
-        return atten @ self.w_o
+        
+        mask = torch.tril(torch.ones(x.shape[1], x.shape[1])).bool()
+        mask = mask.unsqueeze(0).unsqueeze(0).tile(x.shape[0], self.num_heads, 1, 1)
+        q = self.w_q(x).reshape(x.shape[0], x.shape[1], self.num_heads, self.head_dim)
+        q = q.transpose(1, 2)
+        k = self.w_k(x).reshape(x.shape[0], x.shape[1], self.num_heads, self.head_dim)
+        k = k.transpose(1, 2)
+        v = self.w_v(x).reshape(x.shape[0], x.shape[1], self.num_heads, self.head_dim)
+        v = v.transpose(1, 2)
+        
+        print(q.shape, k.shape, v.shape, mask.shape)
+        print(mask)
+        atten = self.attention(q, k, v, mask)
+        atten = atten.reshape(x.shape)
+        print(atten)
+        return self.w_o(atten)
