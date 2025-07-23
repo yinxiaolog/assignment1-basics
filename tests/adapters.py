@@ -16,7 +16,8 @@ from cs336_basics.mynn import (
     RMSNorm,
     SwiGLU,
     Softmax,
-    Attention
+    Attention,
+    RoPE,
 )
 
 
@@ -216,7 +217,8 @@ def run_rope(
     Returns:
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
-    raise NotImplementedError
+    rope = RoPE(theta, d_k, max_seq_len)
+    return rope(in_query_or_key, token_positions)
 
 
 def run_transformer_block(
