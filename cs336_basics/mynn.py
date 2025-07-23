@@ -56,7 +56,6 @@ class RMSNorm(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         in_dtype = x.dtype
         rms = torch.sum(x**2, -1, keepdim=True) / self.d_model + self.eps
-        rms = torch.sum(x**2, -1, keepdim=True) / self.d_model + self.eps
         rms = torch.sqrt(rms)
         result = x / rms * self.g
         return result.to(in_dtype)
