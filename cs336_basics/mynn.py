@@ -1,5 +1,11 @@
+import math
+from typing import Optional
+from collections.abc import Callable
+
 import torch
 import torch.nn as nn
+from torch.optim.lr_scheduler import LRScheduler
+from torch.utils.data import Dataset, DataLoader
 
 
 class Linear(nn.Module):
@@ -57,6 +63,14 @@ class RMSNorm(nn.Module):
         rms = torch.sqrt(rms)
         result = x / rms * self.weight
         return result.to(in_dtype)
+    
+
+class SiLU(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x / (1 + torch.exp(-x))
 
 
 class SwiGLU(nn.Module):
@@ -65,12 +79,10 @@ class SwiGLU(nn.Module):
         self.w1 = Linear(d_model, d_ff)
         self.w2 = Linear(d_ff, d_model)
         self.w3 = Linear(d_model, d_ff)
+        self.silu = SiLU()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.w2(self.silu(self.w1(x)) * self.w3(x))
-
-    def silu(self, x: torch.Tensor) -> torch.Tensor:
-        return x / (1 + torch.exp(-x))
 
 
 class RoPE(nn.Module):
@@ -239,3 +251,121 @@ class TransformerLM(nn.Module):
         x = self.ln_final(x)
         x = self.lm_head(x)
         return x
+
+
+class CrossEntropyLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.softmax = Softmax()
+
+    def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        input -= torch.max(input, dim=-1, keepdim=True).values
+        loss = (
+            input.gather(-1, target.reshape(-1, 1))
+            - torch.sum(torch.exp(input), dim=-1, keepdim=True).log()
+        )
+        return -loss.sum() / input.shape[0]
+
+
+class AdamW(torch.optim.Optimizer):
+    def __init__(self, params, lr=1e-3, weight_decay=0.01, betas=(0.9, 0.99), eps=1e-8):
+        defaults = {
+            "lr": lr,
+            "beta1": betas[0],
+            "beta2": betas[1],
+            "eps": eps,
+            "weight_decay": weight_decay,
+        }
+        super().__init__(params, defaults)
+
+    def step(self, closure: Optional[Callable] = None):
+        for group in self.param_groups:
+            lr = group["lr"]
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                state = self.state[p]
+                t = state.get("t", 1)
+                grad = p.grad.data
+                m = state.get("m", torch.zeros(p.grad.shape))
+                v = state.get("v", torch.zeros(p.grad.shape))
+                beta1 = group["beta1"]
+                beta2 = group["beta2"]
+                weight_decay = group["weight_decay"]
+                eps = group["eps"]
+                m = beta1 * m + (1 - beta1) * grad
+                v = beta2 * v + (1 - beta2) * (grad**2)
+                lr_t = lr * (((1 - beta2**t) ** 0.5) / (1 - beta1**t))
+                p.data -= lr_t * m / (v**0.5 + eps)
+                p.data -= lr * weight_decay * p.data
+                state["t"] = t + 1
+                state["m"] = m
+                state["v"] = v
+
+
+def cosine_lr(
+    it: int,
+    max_learning_rate: float,
+    min_learning_rate: float,
+    warmup_iters: int,
+    cosine_cycle_iters: int,
+):
+    if it < warmup_iters:
+        return it / warmup_iters * max_learning_rate
+    if it > cosine_cycle_iters:
+        return min_learning_rate
+
+    return min_learning_rate + 0.5 * (
+        1
+        + math.cos((it - warmup_iters) / (cosine_cycle_iters - warmup_iters) * math.pi)
+    ) * (max_learning_rate - min_learning_rate)
+
+
+def gradient_clipping(params, max_norm):
+    grads = [param.grad for param in params if param.grad is not None]
+    grads = torch.stack(grads).reshape(-1)
+    l2 = torch.norm(grads, p=2)
+    if l2 >= max_norm:
+        alpha = max_norm / (l2 + 1e-6)
+        for param in params:
+            if param.grad is not None:
+                param.grad.mul_(alpha)
+
+
+class LMDataset(Dataset):
+    def __init__(self, data, context_length, device="cpu"):
+        super().__init__()
+        self.data = data
+        self.context_length = context_length
+        self.device = device
+
+    def __len__(self):
+        return len(self.data) - self.context_length
+
+    def __getitem__(self, index):
+        input = self.data[index : index + self.context_length]
+        label = self.data[index + 1 : index + 1 + self.context_length]
+        return torch.tensor(input, dtype=torch.long).to(self.device), torch.tensor(
+            label, dtype=torch.long
+        ).to(self.device)
+
+
+class LMDataLoader(DataLoader): ...
+
+
+def save_checkpoint(model, optimizer, iteration, out):
+    torch.save(
+        {
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "iteration": iteration,
+        },
+        out,
+    )
+
+
+def load_checkpoint(src, model, optimizer):
+    checkpoint = torch.load(src)
+    model.load_state_dict(checkpoint["model"])
+    optimizer.load_state_dict(checkpoint["optimizer"])
+    return checkpoint["iteration"]
