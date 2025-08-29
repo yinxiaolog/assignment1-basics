@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import Dataset, DataLoader
+import swanlab
 
 
 class Linear(nn.Module):
@@ -63,7 +64,7 @@ class RMSNorm(nn.Module):
         rms = torch.sqrt(rms)
         result = x / rms * self.weight
         return result.to(in_dtype)
-    
+
 
 class SiLU(nn.Module):
     def __init__(self):
@@ -94,6 +95,7 @@ class RoPE(nn.Module):
         device: torch.device | None = None,
     ):
         super().__init__()
+        self.device = device
         cos_rotation = []
         sin_rotation = []
         for i in range(max_seq_len):
@@ -107,7 +109,9 @@ class RoPE(nn.Module):
         q = x
         p = q.clone()
         n = x.shape[-1]
-        indices = torch.arange(n)
+        indices = torch.arange(n, device=x.device)
+        self.cos_rotation = self.cos_rotation.to(device=x.device)
+        self.sin_rotation = self.sin_rotation.to(device=x.device)
         indices[::2] = torch.arange(1, n, 2)
         indices[1::2] = torch.arange(0, n, 2)
         p = p.index_select(-1, indices)
@@ -150,6 +154,7 @@ class Attention(nn.Module):
     ) -> torch.Tensor:
         out = q @ k.mT
         out = out / (k.shape[-1] ** 0.5)
+        mask = mask.to(device=q.device)
         if mask is not None:
             out.masked_fill_(~mask, -float("inf"))
         out = self.softmax(out, dim=-1)
@@ -232,7 +237,7 @@ class TransformerLM(nn.Module):
         d_model: int,
         num_heads: int,
         d_ff: int,
-        theta: 0.1,
+        theta: 10000,
     ):
         super().__init__()
         self.token_embeddings = Embedding(vocab_size, d_model)
@@ -267,6 +272,31 @@ class CrossEntropyLoss(nn.Module):
         return -loss.sum() / input.shape[0]
 
 
+class SGD(torch.optim.Optimizer):
+    def __init__(self, params, lr=1e-3):
+        if lr < 0:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        defaults = {"lr": lr}
+        super().__init__(params, defaults)
+
+    def step(self, closure: Optional[Callable] = None):
+        loss = None if closure is None else closure()
+        for group in self.param_groups:
+            lr = group["lr"]  # Get the learning rate.
+
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                state = self.state[p]  # Get state associated with p.
+                t = state.get(
+                    "t", 0
+                )  # Get iteration number from the state, or initial value.
+                grad = p.grad.data  # Get the gradient of loss with respect to p.
+                p.data -= lr / math.sqrt(t + 1) * grad  # Update weight tensor in-place.
+                state["t"] = t + 1  # Increment iteration number.
+        return loss
+
+
 class AdamW(torch.optim.Optimizer):
     def __init__(self, params, lr=1e-3, weight_decay=0.01, betas=(0.9, 0.99), eps=1e-8):
         defaults = {
@@ -279,6 +309,7 @@ class AdamW(torch.optim.Optimizer):
         super().__init__(params, defaults)
 
     def step(self, closure: Optional[Callable] = None):
+        loss = None if closure is None else closure()
         for group in self.param_groups:
             lr = group["lr"]
             for p in group["params"]:
@@ -287,8 +318,8 @@ class AdamW(torch.optim.Optimizer):
                 state = self.state[p]
                 t = state.get("t", 1)
                 grad = p.grad.data
-                m = state.get("m", torch.zeros(p.grad.shape))
-                v = state.get("v", torch.zeros(p.grad.shape))
+                m = state.get("m", torch.zeros(p.grad.shape, device=p.device))
+                v = state.get("v", torch.zeros(p.grad.shape, device=p.device))
                 beta1 = group["beta1"]
                 beta2 = group["beta2"]
                 weight_decay = group["weight_decay"]
@@ -301,6 +332,8 @@ class AdamW(torch.optim.Optimizer):
                 state["t"] = t + 1
                 state["m"] = m
                 state["v"] = v
+
+        return loss
 
 
 def cosine_lr(
@@ -353,14 +386,14 @@ class LMDataset(Dataset):
 class LMDataLoader(DataLoader): ...
 
 
-def save_checkpoint(model, optimizer, iteration, out):
+def save_checkpoint(model, optimizer, iteration, path):
     torch.save(
         {
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "iteration": iteration,
         },
-        out,
+        path,
     )
 
 
@@ -369,3 +402,114 @@ def load_checkpoint(src, model, optimizer):
     model.load_state_dict(checkpoint["model"])
     optimizer.load_state_dict(checkpoint["optimizer"])
     return checkpoint["iteration"]
+
+
+class Config:
+    epochs = 5
+    lr = 1e-3
+    batch_size = 1
+    vocab_size = 50257
+    context_length = 700
+    device = "cpu"
+    loss_fn = CrossEntropyLoss()
+    optim = None
+
+
+class Trainer:
+    def __init__(
+        self,
+        model: nn.Module,
+        tokenizer,
+        train_dataset: Dataset,
+        val_dataset: Dataset = None,
+        test_dataset: Dataset = None,
+        config: Config = None,
+        project: str = "default",
+        experiment_name="foo",
+        description: str = "default",
+    ):
+        self.swanlab_run = swanlab.init(
+            project=project, experiment_name=experiment_name, description=description
+        )
+
+        swanlab.config = {
+            "epochs": config.epochs,
+            "lr": config.lr,
+            "batch_size": config.batch_size,
+        }
+        self.device = config.device
+        self.model: nn.Module = model.to(self.device)
+        self.tokenizer = tokenizer
+        self.train_dataloader = DataLoader(
+            train_dataset, batch_size=config.batch_size, shuffle=True
+        )
+        if val_dataset is not None:
+            self.val_dataloader = DataLoader(
+                val_dataset, batch_size=config.batch_size, shuffle=True
+            )
+        if test_dataset is not None:
+            self.test_dataloader = DataLoader(
+                test_dataset, batch_size=config.batch_size, shuffle=True
+            )
+        self.config = config
+        self.loss_fn = config.loss_fn
+        self.optim = config.optim
+
+    def train(self):
+        self.model.train()
+        step = 0
+        for _ in range(self.config.epochs):
+            for x, y in self.train_dataloader:
+                loss = self.train_one_step(x, y)
+                self.swanlab_run.log({"loss": loss})
+                step += 1
+                if step % 10 == 0:
+                    print(
+                        f"step: {step}\n story: {self.test("The rain had just stopped when Emma stepped off the train.")}"
+                    )
+                    save_checkpoint(
+                        self.model,
+                        self.optim,
+                        step,
+                        path=f"model_optim_step_{step}.pth",
+                    )
+
+    def val(self):
+        pass
+
+    def test(self, prompt: str, max_new_token: int = 1000, top_k = None, temperature: float=0.0):
+        self.model.eval()
+        idx = self.tokenizer.encode(prompt)
+        idx = torch.tensor(idx, device=self.device)
+        idx = idx.unsqueeze(0)
+        for _ in range(max_new_token):
+            input = idx[:, -self.config.context_length :]
+            logits = self.model(input)[:, -1, :]
+            if top_k is not None:
+                top_k_logits, _ = torch.topk(logits, top_k)
+                min_top_k = top_k_logits[:, -1]
+                logits = torch.where(logits < min_top_k, torch.tensor(float("-inf")).to(logits.device), logits)
+
+            if temperature > 0:
+                logits = logits / temperature
+                prob = torch.softmax(logits, dim=-1)
+                idx_next = torch.multinomial(prob, num_samples=1)
+            else:
+                idx_next = torch.argmax(logits, dim=-1, keepdim=True)
+            if (
+                idx_next.item()
+                == self.tokenizer.token_2_id["<|endoftext|>".encode(encoding="utf-8")]
+            ):
+                break
+            idx = torch.cat((idx, idx_next), dim=1)
+        return self.tokenizer.decode(idx.reshape(-1).tolist())
+
+    def train_one_step(self, x: torch.Tensor, label: torch.Tensor) -> float:
+        x = x.to(self.device)
+        label = label.to(self.device)
+        y = self.model(x)
+        loss = self.loss_fn(y.reshape(-1, y.shape[-1]), label.reshape(-1))
+        self.optim.zero_grad()
+        loss.backward()
+        self.optim.step()
+        return loss.item()
