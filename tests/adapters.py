@@ -25,6 +25,7 @@ from cs336_basics.mynn import (
     CrossEntropyLoss,
     AdamW,
     cosine_lr,
+    CosineLR,
     gradient_clipping,
     LMDataset,
     LMDataLoader,
@@ -561,9 +562,14 @@ def run_get_lr_cosine_schedule(
     Returns:
         Learning rate at the given iteration under the specified schedule.
     """
-    return cosine_lr(
-        it, max_learning_rate, min_learning_rate, warmup_iters, cosine_cycle_iters
-    )
+    model = torch.nn.Linear(100, 1)
+    optim = AdamW(model.parameters(), lr=1e-3)
+    scheduler = CosineLR(optim, max_learning_rate, min_learning_rate, warmup_iters, cosine_cycle_iters, last_epoch=-1)
+    for _ in range(it):
+        optim.step()
+        scheduler.step()
+    
+    return scheduler.get_last_lr()[0]
 
 
 def run_save_checkpoint(

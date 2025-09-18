@@ -323,7 +323,7 @@ def sample(filepath, num_sample=10):
 
 
 def load_tokenizer(filepath):
-    with open(f"{Path(filepath).stem}_tokenzier.pkl", "rb") as f:
+    with open(filepath, "rb") as f:
         return pickle.load(f)
 
 

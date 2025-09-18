@@ -1,4 +1,5 @@
 import math
+import json
 from typing import Optional
 from collections.abc import Callable
 
@@ -7,6 +8,7 @@ import torch.nn as nn
 from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import Dataset, DataLoader
 import swanlab
+from .bpe import Tokenizer
 
 
 class Linear(nn.Module):
@@ -354,6 +356,43 @@ def cosine_lr(
     ) * (max_learning_rate - min_learning_rate)
 
 
+class CosineLR(LRScheduler):
+    def __init__(
+        self,
+        optimizer,
+        max_learning_rate: float,
+        min_learning_rate: float,
+        warmup_iters: int,
+        cosine_cycle_iters: int,
+        last_epoch=-1,
+        verbose="deprecated",
+    ):
+
+        self.max_learning_rate = max_learning_rate
+        self.min_learning_rate = min_learning_rate
+        self.warmup_iters = warmup_iters
+        self.cosine_cycle_iters = cosine_cycle_iters
+        super().__init__(optimizer, last_epoch, verbose)
+
+    def get_lr(self):
+        it = self.last_epoch
+
+        if it < self.warmup_iters:
+            lr = it / self.warmup_iters * self.max_learning_rate
+        elif it > self.cosine_cycle_iters:
+            lr = self.min_learning_rate
+        else:
+            lr = self.min_learning_rate + 0.5 * (
+                1
+                + math.cos(
+                    (it - self.warmup_iters)
+                    / (self.cosine_cycle_iters - self.warmup_iters)
+                    * math.pi
+                )
+            ) * (self.max_learning_rate - self.min_learning_rate)
+        return [lr for _ in self.optimizer.param_groups]
+
+
 def gradient_clipping(params, max_norm):
     grads = [param.grad for param in params if param.grad is not None]
     grads = torch.stack(grads).reshape(-1)
@@ -366,16 +405,19 @@ def gradient_clipping(params, max_norm):
 
 
 class LMDataset(Dataset):
-    def __init__(self, data, context_length, device="cpu"):
+    def __init__(self, data, context_length, stride=1, device="cpu"):
         super().__init__()
         self.data = data
         self.context_length = context_length
+        self.stride = stride
         self.device = device
 
     def __len__(self):
-        return len(self.data) - self.context_length
+        return (len(self.data) - 1 - self.context_length) // self.stride + 1
+        # return len(self.data) - self.context_length
 
     def __getitem__(self, index):
+        index *= self.stride
         input = self.data[index : index + self.context_length]
         label = self.data[index + 1 : index + 1 + self.context_length]
         return torch.tensor(input, dtype=torch.long).to(self.device), torch.tensor(
@@ -406,13 +448,16 @@ def load_checkpoint(src, model, optimizer):
 
 class Config:
     epochs = 5
-    lr = 1e-3
+    lr = 1e-4
     batch_size = 1
     vocab_size = 50257
-    context_length = 700
+    context_length = 1024
     device = "cpu"
     loss_fn = CrossEntropyLoss()
     optim = None
+
+    def __repr__(self):
+        return json.dumps(self.__dict__, indent=4, default=str, ensure_ascii=False)
 
 
 class Trainer:
@@ -427,6 +472,7 @@ class Trainer:
         project: str = "default",
         experiment_name="foo",
         description: str = "default",
+        total_tokens_processed=327680000,
     ):
         self.swanlab_run = swanlab.init(
             project=project, experiment_name=experiment_name, description=description
@@ -443,27 +489,39 @@ class Trainer:
         self.train_dataloader = DataLoader(
             train_dataset, batch_size=config.batch_size, shuffle=True
         )
-        if val_dataset is not None:
-            self.val_dataloader = DataLoader(
-                val_dataset, batch_size=config.batch_size, shuffle=True
-            )
-        if test_dataset is not None:
-            self.test_dataloader = DataLoader(
-                test_dataset, batch_size=config.batch_size, shuffle=True
-            )
+        self.val_dataloader = (
+            DataLoader(val_dataset, batch_size=config.batch_size * 4, shuffle=False)
+            if val_dataset is not None
+            else None
+        )
+        self.test_dataloader = (
+            DataLoader(test_dataset, batch_size=config.batch_size, shuffle=True)
+            if test_dataset is not None
+            else None
+        )
         self.config = config
         self.loss_fn = config.loss_fn
         self.optim = config.optim
+        self.total_tokens_processed = total_tokens_processed
 
-    def train(self):
-        self.model.train()
+    def train(self, checkpoint_path=None):
         step = 0
-        for _ in range(self.config.epochs):
+        if checkpoint_path is not None:
+            step = load_checkpoint(checkpoint_path, self.model, self.optim)
+        self.model.train()
+
+        for epoch in range(self.config.epochs):
             for x, y in self.train_dataloader:
                 loss = self.train_one_step(x, y)
-                self.swanlab_run.log({"loss": loss})
+                self.swanlab_run.log({"train loss": loss})
                 step += 1
-                if step % 10 == 0:
+                if (
+                    self.total_tokens_processed > 0
+                    and self.config.batch_size * step * self.config.context_length
+                    >= self.total_tokens_processed
+                ):
+                    exit(0)
+                if step % 1000 == 0:
                     print(
                         f"step: {step}\n story: {self.test("The rain had just stopped when Emma stepped off the train.")}"
                     )
@@ -471,13 +529,45 @@ class Trainer:
                         self.model,
                         self.optim,
                         step,
-                        path=f"model_optim_step_{step}.pth",
+                        path=f"/Users/yinxiaoloong/log/model_optim_step_{step}.pth",
+                    )
+                if step % 10 == 0:
+                    print(
+                        f"epoch: {epoch} step: {step} process: {self.config.batch_size * step * self.config.context_length / self.total_tokens_processed:.2%}, loss={loss:.3f}"
                     )
 
-    def val(self):
-        pass
+                if step % 100 == 0:
+                    val_loss = self.val()
+                    print(f"val loss: {val_loss}")
+                    self.swanlab_run.log({"val loss:": val_loss})
 
-    def test(self, prompt: str, max_new_token: int = 1000, top_k = None, temperature: float=0.0):
+    @torch.inference_mode()
+    def val(self):
+        if self.val_dataloader is None:
+            return 0
+        self.model.eval()
+        device = self.device
+        all_loss = 0
+        size = len(self.val_dataloader.dataset) / self.config.batch_size
+        i = 0
+        # print(self.config.batch_size)
+        for x, label in self.val_dataloader:
+            x = x.to(device)
+            label = label.to(device)
+            y = self.model(x)
+            loss = self.loss_fn(y.reshape(-1, y.shape[-1]), label.reshape(-1))
+            # print(f"{i} / {size}: loss={loss}")
+            all_loss += loss.item() * len(label)
+            i += 1
+        return all_loss / len(self.val_dataloader.dataset)
+
+    def test(
+        self,
+        prompt: str,
+        max_new_token: int = 1000,
+        top_k=None,
+        temperature: float = 0.0,
+    ):
         self.model.eval()
         idx = self.tokenizer.encode(prompt)
         idx = torch.tensor(idx, device=self.device)
@@ -488,7 +578,11 @@ class Trainer:
             if top_k is not None:
                 top_k_logits, _ = torch.topk(logits, top_k)
                 min_top_k = top_k_logits[:, -1]
-                logits = torch.where(logits < min_top_k, torch.tensor(float("-inf")).to(logits.device), logits)
+                logits = torch.where(
+                    logits < min_top_k,
+                    torch.tensor(float("-inf")).to(logits.device),
+                    logits,
+                )
 
             if temperature > 0:
                 logits = logits / temperature
@@ -513,3 +607,52 @@ class Trainer:
         loss.backward()
         self.optim.step()
         return loss.item()
+
+
+class Inference:
+    def __init__(self, model: nn.Module, state_dict, tokenizer: Tokenizer):
+        model.load_state_dict(state_dict)
+        self.model = model
+        self.tokenizer = tokenizer
+        self.device = "cpu"
+        self.context_length = 1024
+
+    def run(
+        self,
+        prompt: str,
+        max_new_token: int = 1000,
+        top_k=None,
+        temperature: float = 0.0,
+    ):
+        self.model.eval()
+        idx = self.tokenizer.encode(prompt)
+        idx = torch.tensor(idx, device=self.device)
+        idx = idx.unsqueeze(0)
+        with torch.inference_mode():
+            for _ in range(max_new_token):
+                input = idx[:, -self.context_length :]
+                logits = self.model(input)[:, -1, :]
+                if top_k is not None:
+                    top_k_logits, _ = torch.topk(logits, top_k)
+                    min_top_k = top_k_logits[:, -1]
+                    logits = torch.where(
+                        logits < min_top_k,
+                        torch.tensor(float("-inf")).to(logits.device),
+                        logits,
+                    )
+
+                if temperature > 0:
+                    logits = logits / temperature
+                    prob = torch.softmax(logits, dim=-1)
+                    idx_next = torch.multinomial(prob, num_samples=1)
+                else:
+                    idx_next = torch.argmax(logits, dim=-1, keepdim=True)
+                if (
+                    idx_next.item()
+                    == self.tokenizer.token_2_id[
+                        "<|endoftext|>".encode(encoding="utf-8")
+                    ]
+                ):
+                    pass
+                idx = torch.cat((idx, idx_next), dim=1)
+        return self.tokenizer.decode(idx.reshape(-1).tolist())

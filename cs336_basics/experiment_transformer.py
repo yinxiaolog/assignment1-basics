@@ -2,7 +2,17 @@ import json
 import torch
 import numpy as np
 
-from .mynn import TransformerLM, SGD, Config, Trainer, LMDataset, LMDataLoader, AdamW
+from .mynn import (
+    TransformerLM,
+    SGD,
+    Config,
+    Trainer,
+    LMDataset,
+    LMDataLoader,
+    AdamW,
+    Inference,
+    CosineLR,
+)
 from .bpe import load_tokenizer, Tokenizer
 
 
@@ -113,13 +123,56 @@ def learning_rate_tuning(lr, iterations=10):
 
 def training_loop():
     cfg = Config()
+    cfg.batch_size = 32
+    cfg.vocab_size = 10000
+    cfg.context_length = 256
+    cfg.device = "mps"
+    cfg.lr = 1e-4
     train_dataset = LMDataset(
         data=np.load(
-            file="/opt/code/cs336/assignment1-basics/ts_train.npy", mmap_mode="r"
+            file="/Users/yinxiaoloong/dataset/cs336/ts_train.npy", mmap_mode="r"
         ),
         context_length=cfg.context_length,
     )
+    val_dataset = LMDataset(
+        data=np.load(
+            file="/Users/yinxiaoloong/dataset/cs336/ts_valid.npy", mmap_mode="r"
+        ),
+        context_length=cfg.context_length,
+        stride=cfg.context_length,
+    )
 
+    model = TransformerLM(
+        vocab_size=cfg.vocab_size,
+        context_length=cfg.context_length,
+        num_layers=4,
+        d_model=512,
+        num_heads=16,
+        d_ff=1344,
+        theta=10000,
+    )
+    model = torch.compile(model, backend="aot_eager")
+    model = model.to(cfg.device)
+    tokenizer: Tokenizer = load_tokenizer(
+        "/Users/yinxiaoloong/dataset/cs336/TinyStoriesV2-GPT4-train_tokenzier.pkl"
+    )
+    cfg.optim = AdamW(model.parameters(), lr=cfg.lr)
+
+    trainer = Trainer(
+        model=model,
+        tokenizer=tokenizer,
+        train_dataset=train_dataset,
+        val_dataset=val_dataset,
+        config=cfg,
+        project="cs336_basics",
+        experiment_name=f"train_tinystory lr={cfg.lr}",
+        description="training tinystory",
+    )
+    print(cfg)
+    trainer.train()
+
+
+def inferance():
     model = TransformerLM(
         vocab_size=50257,
         context_length=1024,
@@ -129,21 +182,22 @@ def training_loop():
         d_ff=6400,
         theta=10000,
     )
-    model = model.to(cfg.device)
     tokenizer: Tokenizer = load_tokenizer(
-        "/opt/dataset/cs336/assignment1-basics/TinyStoriesV2-GPT4-train.txt"
+        "/Users/yinxiaoloong/dataset/cs336/TinyStoriesV2-GPT4-train_tokenzier.pkl"
     )
-    cfg.optim = AdamW(model.parameters(), lr=cfg.lr)
-    cfg.device = "cuda"
-    trainer = Trainer(
-        model=model, tokenizer=tokenizer, train_dataset=train_dataset, config=cfg,
-        project="cs336_basics",
-        experiment_name="train_tinystory",
-        description="training tinystory"
+    infer = Inference(
+        model,
+        torch.load("/Users/yinxiaoloong/log/model_optim_step_10000.pth")["model"],
+        tokenizer,
     )
-    trainer.train()
+    print(
+        infer.run(
+            """u don't have to be scared of the loud dog, I'll protect you". The mole felt so safe with the little girl. She was very kind and the mole soon came to trust her. He leaned against her and she kept him safe. The mole had found his best friend."""
+        )
+    )
 
 
 if __name__ == "__main__":
     # print(len(np.load(file="/opt/code/cs336/assignment1-basics/ts_train.npy", mmap_mode="r")))
     training_loop()
+    # inferance()
