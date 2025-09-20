@@ -447,20 +447,6 @@ def load_checkpoint(src, model, optimizer):
     return checkpoint["iteration"]
 
 
-class Config:
-    epochs = 5
-    lr = 1e-4
-    batch_size = 1
-    vocab_size = 50257
-    context_length = 1024
-    device = "cpu"
-    loss_fn = CrossEntropyLoss()
-    optim = None
-
-    def __repr__(self):
-        return json.dumps(self.__dict__, indent=4, default=str, ensure_ascii=False)
-
-
 class Trainer:
     def __init__(
         self,
@@ -469,7 +455,7 @@ class Trainer:
         train_dataset: Dataset,
         val_dataset: Dataset = None,
         test_dataset: Dataset = None,
-        config: Config = None,
+        config = None,
         project: str = "default",
         experiment_name="foo",
         description: str = "default",
