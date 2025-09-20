@@ -1,3 +1,4 @@
+import os
 import math
 import json
 from typing import Optional
@@ -478,30 +479,35 @@ class Trainer:
             project=project, experiment_name=experiment_name, description=description
         )
 
-        swanlab.config = {
-            "epochs": config.epochs,
-            "lr": config.lr,
-            "batch_size": config.batch_size,
-        }
-        self.device = config.device
+        swanlab.config = {"cfg": config}
+        print(f"cfg: {config}")
+        self.device = config.model.device
         self.model: nn.Module = model.to(self.device)
         self.tokenizer = tokenizer
         self.train_dataloader = DataLoader(
-            train_dataset, batch_size=config.batch_size, shuffle=True
+            train_dataset, batch_size=config.model.batch_size, shuffle=True
         )
         self.val_dataloader = (
-            DataLoader(val_dataset, batch_size=config.batch_size * 4, shuffle=False)
+            DataLoader(val_dataset, batch_size=config.model.batch_size * 4, shuffle=False)
             if val_dataset is not None
             else None
         )
         self.test_dataloader = (
-            DataLoader(test_dataset, batch_size=config.batch_size, shuffle=True)
+            DataLoader(test_dataset, batch_size=config.model.batch_size, shuffle=True)
             if test_dataset is not None
             else None
         )
         self.config = config
-        self.loss_fn = config.loss_fn
-        self.optim = config.optim
+        if config.loss_fn.name == "CrossEntropyLoss":
+            self.loss_fn = CrossEntropyLoss()
+        else:
+            raise Exception(f"not support loss_fn: {config.loss_fn.name}")
+        
+        if config.optimizer.name == "AdamW":
+            self.optim = AdamW(self.model.parameters(), lr=config.optimizer.lr)
+        else:
+            raise Exception(f"not support optimizer: {config.loss_fn.name}")
+        #self.scheduler = CosineLR(self.optim, config.optimizer.lr, 1e-5, warmup_iters=1000, cosine_cycle_iters=30000)
         self.total_tokens_processed = total_tokens_processed
 
     def train(self, checkpoint_path=None):
@@ -509,15 +515,16 @@ class Trainer:
         if checkpoint_path is not None:
             step = load_checkpoint(checkpoint_path, self.model, self.optim)
         self.model.train()
-
-        for epoch in range(self.config.epochs):
+        
+        for epoch in range(self.config.model.epochs):
             for x, y in self.train_dataloader:
                 loss = self.train_one_step(x, y)
-                self.swanlab_run.log({"train loss": loss})
                 step += 1
+                self.swanlab_run.log({"train loss": loss})
+                self.swanlab_run.log({"process": self.config.model.batch_size * step * self.config.model.context_length / self.total_tokens_processed * 100})
                 if (
                     self.total_tokens_processed > 0
-                    and self.config.batch_size * step * self.config.context_length
+                    and self.config.model.batch_size * step * self.config.model.context_length
                     >= self.total_tokens_processed
                 ):
                     exit(0)
@@ -529,17 +536,29 @@ class Trainer:
                         self.model,
                         self.optim,
                         step,
-                        path=f"/Users/yinxiaoloong/log/model_optim_step_{step}.pth",
+                        path=os.path.join(
+                            self.config.log.dir, f"model_optim_step_{step}.pth"
+                        ),
                     )
                 if step % 10 == 0:
                     print(
-                        f"epoch: {epoch} step: {step} process: {self.config.batch_size * step * self.config.context_length / self.total_tokens_processed:.2%}, loss={loss:.3f}"
+                        f"epoch: {epoch} step: {step} process: {self.config.model.batch_size * step * self.config.model.context_length / self.total_tokens_processed:.2%}, loss={loss:.3f}"
                     )
-
                 if step % 100 == 0:
                     val_loss = self.val()
                     print(f"val loss: {val_loss}")
                     self.swanlab_run.log({"val loss:": val_loss})
+
+    def train_one_step(self, x: torch.Tensor, label: torch.Tensor) -> float:
+        x = x.to(self.device)
+        label = label.to(self.device)
+        y = self.model(x)
+        loss = self.loss_fn(y.reshape(-1, y.shape[-1]), label.reshape(-1))
+        self.optim.zero_grad()
+        loss.backward()
+        self.optim.step()
+        #self.scheduler.step()
+        return loss.item()
 
     @torch.inference_mode()
     def val(self):
@@ -548,7 +567,7 @@ class Trainer:
         self.model.eval()
         device = self.device
         all_loss = 0
-        size = len(self.val_dataloader.dataset) / self.config.batch_size
+        size = len(self.val_dataloader.dataset) / self.config.model.batch_size
         i = 0
         # print(self.config.batch_size)
         for x, label in self.val_dataloader:
@@ -573,7 +592,7 @@ class Trainer:
         idx = torch.tensor(idx, device=self.device)
         idx = idx.unsqueeze(0)
         for _ in range(max_new_token):
-            input = idx[:, -self.config.context_length :]
+            input = idx[:, -self.config.model.context_length :]
             logits = self.model(input)[:, -1, :]
             if top_k is not None:
                 top_k_logits, _ = torch.topk(logits, top_k)
@@ -597,16 +616,6 @@ class Trainer:
                 break
             idx = torch.cat((idx, idx_next), dim=1)
         return self.tokenizer.decode(idx.reshape(-1).tolist())
-
-    def train_one_step(self, x: torch.Tensor, label: torch.Tensor) -> float:
-        x = x.to(self.device)
-        label = label.to(self.device)
-        y = self.model(x)
-        loss = self.loss_fn(y.reshape(-1, y.shape[-1]), label.reshape(-1))
-        self.optim.zero_grad()
-        loss.backward()
-        self.optim.step()
-        return loss.item()
 
 
 class Inference:

@@ -1,6 +1,8 @@
 import json
 import torch
 import numpy as np
+import hydra
+from omegaconf import DictConfig
 
 from .mynn import (
     TransformerLM,
@@ -14,6 +16,7 @@ from .mynn import (
     CosineLR,
 )
 from .bpe import load_tokenizer, Tokenizer
+from .config import CudaConfig
 
 
 def transformer_accounting(
@@ -121,42 +124,31 @@ def learning_rate_tuning(lr, iterations=10):
         opt.step()
 
 
-def training_loop():
-    cfg = Config()
-    cfg.batch_size = 32
-    cfg.vocab_size = 10000
-    cfg.context_length = 256
-    cfg.device = "mps"
-    cfg.lr = 1e-4
+@hydra.main(config_path="conf", config_name="config", version_base=None)
+def training_loop(cfg: DictConfig):
+    print(cfg)
     train_dataset = LMDataset(
-        data=np.load(
-            file="/Users/yinxiaoloong/dataset/cs336/ts_train.npy", mmap_mode="r"
-        ),
-        context_length=cfg.context_length,
+        data=np.load(file=cfg.data.train_dataset_path, mmap_mode="r"),
+        context_length=cfg.model.context_length,
     )
     val_dataset = LMDataset(
-        data=np.load(
-            file="/Users/yinxiaoloong/dataset/cs336/ts_valid.npy", mmap_mode="r"
-        ),
-        context_length=cfg.context_length,
-        stride=cfg.context_length,
+        data=np.load(file=cfg.data.val_dataset_path, mmap_mode="r"),
+        context_length=cfg.model.context_length,
+        stride=cfg.model.context_length,
     )
 
     model = TransformerLM(
-        vocab_size=cfg.vocab_size,
-        context_length=cfg.context_length,
+        vocab_size=cfg.model.vocab_size,
+        context_length=cfg.model.context_length,
         num_layers=4,
         d_model=512,
         num_heads=16,
         d_ff=1344,
         theta=10000,
     )
-    model = torch.compile(model, backend="aot_eager")
-    model = model.to(cfg.device)
-    tokenizer: Tokenizer = load_tokenizer(
-        "/Users/yinxiaoloong/dataset/cs336/TinyStoriesV2-GPT4-train_tokenzier.pkl"
-    )
-    cfg.optim = AdamW(model.parameters(), lr=cfg.lr)
+    model = torch.compile(model, backend=cfg.model.backend)
+    model = model.to(cfg.model.device)
+    tokenizer: Tokenizer = load_tokenizer(cfg.data.tokenizer_path)
 
     trainer = Trainer(
         model=model,
@@ -165,10 +157,9 @@ def training_loop():
         val_dataset=val_dataset,
         config=cfg,
         project="cs336_basics",
-        experiment_name=f"train_tinystory lr={cfg.lr}",
+        experiment_name=f"train_tinystory lr={cfg.optimizer.lr}, batch_size={cfg.model.batch_size}",
         description="training tinystory",
     )
-    print(cfg)
     trainer.train()
 
 

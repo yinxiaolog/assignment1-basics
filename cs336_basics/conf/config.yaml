@@ -1,0 +1,22 @@
+model:
+    epochs: 2
+    batch_size: 32
+    vocab_size: 10000
+    context_length: 256
+    device: "cuda"
+    backend: "inductor"
+
+optimizer:
+    name: "AdamW"
+    lr: 1e-3
+
+loss_fn:
+    name: "CrossEntropyLoss"
+
+data:
+    train_dataset_path: "/opt/dataset/cs336/ts_train.npy"
+    val_dataset_path: "/opt/dataset/cs336/ts_valid.npy"
+    tokenizer_path: "/opt/dataset/cs336/TinyStoriesV2-GPT4-train_tokenzier.pkl"
+
+log:
+    dir: "/opt/log"
