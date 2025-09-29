@@ -7,7 +7,10 @@ from collections.abc import Callable
 import torch
 import torch.nn as nn
 from torch.optim.lr_scheduler import LRScheduler
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
+import torch.multiprocessing as mp
 import swanlab
 from .bpe import Tokenizer
 
@@ -455,7 +458,7 @@ class Trainer:
         train_dataset: Dataset,
         val_dataset: Dataset = None,
         test_dataset: Dataset = None,
-        config = None,
+        config=None,
         project: str = "default",
         experiment_name="foo",
         description: str = "default",
@@ -470,54 +473,68 @@ class Trainer:
         self.device = config.model.device
         self.model: nn.Module = model.to(self.device)
         self.tokenizer = tokenizer
-        self.train_dataloader = DataLoader(
-            train_dataset, batch_size=config.model.batch_size, shuffle=True
-        )
-        self.val_dataloader = (
-            DataLoader(val_dataset, batch_size=config.model.batch_size * 4, shuffle=False)
-            if val_dataset is not None
-            else None
-        )
-        self.test_dataloader = (
-            DataLoader(test_dataset, batch_size=config.model.batch_size, shuffle=True)
-            if test_dataset is not None
-            else None
-        )
+        self.train_dataset = train_dataset
+        self.val_dataset = val_dataset
+        self.test_dataset = test_dataset
         self.config = config
         if config.loss_fn.name == "CrossEntropyLoss":
             self.loss_fn = CrossEntropyLoss()
         else:
             raise Exception(f"not support loss_fn: {config.loss_fn.name}")
-        
+
         if config.optimizer.name == "AdamW":
-            self.optim = AdamW(self.model.parameters(), lr=config.optimizer.lr)
+            self.optim = AdamW
         else:
             raise Exception(f"not support optimizer: {config.loss_fn.name}")
-        #self.scheduler = CosineLR(self.optim, config.optimizer.lr, 1e-5, warmup_iters=1000, cosine_cycle_iters=30000)
+        # self.scheduler = CosineLR(self.optim, config.optimizer.lr, 1e-5, warmup_iters=1000, cosine_cycle_iters=30000)
         self.total_tokens_processed = total_tokens_processed
 
+    def setup(self):
+        self.rank = int(os.environ["RANK"])
+        self.world_size = int(os.environ["WORLD_SIZE"])
+        self.rank = int(os.environ["LOCAL_RANK"])
+        torch.cuda.set_device(self.rank)
+        dist.init_process_group(backend="nccl", init_method="env://")
+
     def train(self, checkpoint_path=None):
-        step = 0
+        self.setup()
+        train_sampler = DistributedSampler(
+            self.train_dataset,
+            num_replicas=self.config.model.world_size,
+            rank=self.rank,
+            shuffle=True,
+        )
+        train_dataloader = DataLoader(
+            self.train_dataset,
+            batch_size=self.config.model.batch_size,
+            sampler=train_sampler,
+        )
+        model = self.model.to(self.rank)
+        self.model = DDP(model, device_ids=[self.rank])
+        self.optim = self.optim(self.model.parameters(), lr=self.config.optimizer.lr)
+
         if checkpoint_path is not None:
             step = load_checkpoint(checkpoint_path, self.model, self.optim)
         self.model.train()
-        
+        step = 0
         for epoch in range(self.config.model.epochs):
-            for x, y in self.train_dataloader:
+            for x, y in train_dataloader:
                 loss = self.train_one_step(x, y)
                 step += 1
-                self.swanlab_run.log({"train loss": loss})
-                self.swanlab_run.log({"process": self.config.model.batch_size * step * self.config.model.context_length / self.total_tokens_processed * 100})
+                processed_token = (
+                    self.config.model.batch_size
+                    * step
+                    * self.config.model.context_length
+                    * self.world_size
+                )
+                process = processed_token / self.total_tokens_processed
+
                 if (
                     self.total_tokens_processed > 0
-                    and self.config.model.batch_size * step * self.config.model.context_length
-                    >= self.total_tokens_processed
+                    and processed_token >= self.total_tokens_processed
                 ):
                     exit(0)
                 if step % 1000 == 0:
-                    print(
-                        f"step: {step}\n story: {self.test("The rain had just stopped when Emma stepped off the train.")}"
-                    )
                     save_checkpoint(
                         self.model,
                         self.optim,
@@ -526,45 +543,61 @@ class Trainer:
                             self.config.log.dir, f"model_optim_step_{step}.pth"
                         ),
                     )
-                if step % 10 == 0:
-                    print(
-                        f"epoch: {epoch} step: {step} process: {self.config.model.batch_size * step * self.config.model.context_length / self.total_tokens_processed:.2%}, loss={loss:.3f}"
-                    )
-                if step % 100 == 0:
-                    val_loss = self.val()
-                    print(f"val loss: {val_loss}")
-                    self.swanlab_run.log({"val loss:": val_loss})
+
+                val_loss = self.val() if step % 100 == 0 else None
+                self.log(
+                    epoch,
+                    step,
+                    train_loss=loss,
+                    val_loss=val_loss,
+                    process=process,
+                )
+        self.cleanup()
 
     def train_one_step(self, x: torch.Tensor, label: torch.Tensor) -> float:
-        x = x.to(self.device)
-        label = label.to(self.device)
+        x = x.to(self.rank)
+        label = label.to(self.rank)
         y = self.model(x)
         loss = self.loss_fn(y.reshape(-1, y.shape[-1]), label.reshape(-1))
         self.optim.zero_grad()
         loss.backward()
         self.optim.step()
-        #self.scheduler.step()
-        return loss.item()
+        # self.scheduler.step()
+        loss_tensor = loss.detach()
+        dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
+        loss_tensor /= dist.get_world_size()
+        return loss_tensor.item()
 
     @torch.inference_mode()
     def val(self):
-        if self.val_dataloader is None:
+        if self.val_dataset is None:
             return 0
+
+        val_sampler = DistributedSampler(
+            self.val_dataset,
+            num_replicas=self.config.model.world_size,
+            rank=self.rank,
+            shuffle=True,
+        )
+        val_dataloader = DataLoader(
+            self.train_dataset,
+            batch_size=self.config.model.batch_size,
+            sampler=val_sampler,
+        )
         self.model.eval()
-        device = self.device
-        all_loss = 0
-        size = len(self.val_dataloader.dataset) / self.config.model.batch_size
-        i = 0
-        # print(self.config.batch_size)
-        for x, label in self.val_dataloader:
-            x = x.to(device)
-            label = label.to(device)
+        total_loss = torch.tensor(0.0).to(self.rank)
+        total_samples = torch.tensor(0, dtype=torch.int64).to(self.rank)
+        for x, label in val_dataloader:
+            x = x.to(self.rank)
+            label = label.to(self.rank)
             y = self.model(x)
             loss = self.loss_fn(y.reshape(-1, y.shape[-1]), label.reshape(-1))
-            # print(f"{i} / {size}: loss={loss}")
-            all_loss += loss.item() * len(label)
-            i += 1
-        return all_loss / len(self.val_dataloader.dataset)
+            total_loss += loss * x.size(0)
+            total_samples += x.size(0)
+
+        dist.all_reduce(total_loss, op=dist.ReduceOp.SUM)
+        dist.all_reduce(total_samples, op=dist.ReduceOp.SUM)
+        return (total_loss / total_samples).item()
 
     def test(
         self,
@@ -602,6 +635,28 @@ class Trainer:
                 break
             idx = torch.cat((idx, idx_next), dim=1)
         return self.tokenizer.decode(idx.reshape(-1).tolist())
+    
+    def log(self, epoch: int, step: int, train_loss=None, val_loss=None, process=None):
+        if self.rank != 0:
+            return
+
+        if train_loss is not None:
+            self.swanlab_run.log({"train loss": train_loss})
+        if val_loss is not None:
+            self.swanlab_run.log({"val_loss": val_loss})
+        if process is not None:
+            self.swanlab_run.log({"process": process})
+        log_step = self.config.log.step
+        if step % log_step == 0:
+            print(
+                f"epoch: {epoch}, step: {step}, process: {process:.2%} train_loss: {train_loss}, val_loss: {val_loss}"
+            )
+
+    def run(self):
+        self.train()
+
+    def cleanup(self):
+        dist.destroy_process_group()
 
 
 class Inference:

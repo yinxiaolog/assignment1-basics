@@ -5,6 +5,7 @@ model:
     context_length: 256
     device: "cuda"
     backend: "inductor"
+    world_size: 1
 
 optimizer:
     name: "AdamW"
@@ -19,4 +20,5 @@ data:
     tokenizer_path: "/opt/dataset/cs336/TinyStoriesV2-GPT4-train_tokenzier.pkl"
 
 log:
+    step: 100
     dir: "/opt/log"

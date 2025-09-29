@@ -155,7 +155,7 @@ def training_loop(cfg: DictConfig):
         experiment_name=f"train_tinystory lr={cfg.optimizer.lr}, batch_size={cfg.model.batch_size}",
         description="training tinystory",
     )
-    trainer.train()
+    trainer.run()
 
 
 def inferance():
