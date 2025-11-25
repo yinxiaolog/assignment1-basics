@@ -372,16 +372,16 @@ def tokenizer_experiments_d():
     ts_file = "/opt/dataset/cs336/assignment1-basics/TinyStoriesV2-GPT4-train.txt"
     ts_valid = "/opt/dataset/cs336/assignment1-basics/TinyStoriesV2-GPT4-valid.txt"
     owt_file = "/opt/dataset/cs336/assignment1-basics/owt_train.txt"
-    owt_valid = "/opt/dataset/cs336/assignment1-basics/owt_train.txt"
-    ts_tokenizer = load_tokenizer(ts_file)
-    owt_tokenizer = load_tokenizer(owt_file)
+    owt_valid = "/opt/dataset/cs336/assignment1-basics/owt_valid.txt"
+    #ts_tokenizer = load_tokenizer(ts_file)
+    owt_tokenizer = load_tokenizer("/opt/dataset/cs336/owt_train_tokenzier.pkl")
     # ts_valid_encoded = ts_tokenizer.encode_file(ts_valid)
     # np.save(f"ts_valid.npy", np.array(ts_valid_encoded, dtype=np.uint16))
     # ts_train_encoded = ts_tokenizer.encode_file(ts_file)
     # np.save(f"ts_train.npy", np.array(ts_train_encoded, dtype=np.uint16))
-    owt_train_encoded = owt_tokenizer.encode_file(owt_file, owt_tokenizer)
-    owt_valid_encoded = owt_tokenizer.encode_file(owt_valid, owt_tokenizer)
-    np.save(f"owt_train.npy", np.array(owt_train_encoded, dtype=np.uint16))
+    #owt_train_encoded = owt_tokenizer.encode_file(owt_file)
+    owt_valid_encoded = owt_tokenizer.encode_file(owt_valid)
+    #np.save(f"owt_train.npy", np.array(owt_train_encoded, dtype=np.uint16))
     np.save(f"owt_valid.npy", np.array(owt_valid_encoded, dtype=np.uint16))
 
 
@@ -390,9 +390,9 @@ if __name__ == "__main__":
     #     "/opt/dataset/cs336/assignment1-basics/TinyStoriesV2-GPT4-train.txt",
     #     vocab_size=10000,
     # )
-    train_tokenizer(
-        "/opt/dataset/cs336/assignment1-basics/owt_train.txt", vocab_size=32000
-    )
+    # train_tokenizer(
+    #     "/opt/dataset/cs336/assignment1-basics/owt_train.txt", vocab_size=32000
+    # )
     tokenizer_experiments_d()
     # ts_file = "/opt/dataset/cs336/assignment1-basics/TinyStoriesV2-GPT4-train.txt"
     # ts_tokenizer: Tokenizer = load_tokenizer(ts_file)

@@ -124,6 +124,7 @@ def training_loop(cfg: DictConfig):
     print(cfg)
     train_dataset = LMDataset(
         data=np.load(file=cfg.data.train_dataset_path, mmap_mode="r"),
+        stride=cfg.model.context_length // 2,
         context_length=cfg.model.context_length,
     )
     val_dataset = LMDataset(
@@ -152,8 +153,8 @@ def training_loop(cfg: DictConfig):
         val_dataset=val_dataset,
         config=cfg,
         project="cs336_basics",
-        experiment_name=f"train_tinystory lr={cfg.optimizer.lr}, batch_size={cfg.model.batch_size}",
-        description="training tinystory",
+        experiment_name=f"train_owt lr={cfg.optimizer.lr}, batch_size={cfg.model.batch_size}",
+        description="training owt",
     )
     trainer.run()
 
@@ -169,21 +170,22 @@ def inferance():
         theta=10000,
     )
     tokenizer: Tokenizer = load_tokenizer(
-        "/Users/yinxiaoloong/dataset/cs336/TinyStoriesV2-GPT4-train_tokenzier.pkl"
+        "/opt/dataset/cs336/owt_train_tokenzier.pkl"
     )
     infer = Inference(
         model,
-        torch.load("/Users/yinxiaoloong/log/model_optim_step_10000.pth")["model"],
+        torch.load("/opt/log/model_optim_step_111000.pth")["model"],
         tokenizer,
+        device="cuda",
     )
     print(
         infer.run(
-            """u don't have to be scared of the loud dog, I'll protect you". The mole felt so safe with the little girl. She was very kind and the mole soon came to trust her. He leaned against her and she kept him safe. The mole had found his best friend."""
+            """Baseball Prospectus director of technology Harry Pavlidis took a risk when he hired Jonathan Judge."""
         )
     )
 
 
 if __name__ == "__main__":
     # print(len(np.load(file="/opt/code/cs336/assignment1-basics/ts_train.npy", mmap_mode="r")))
-    training_loop()
-    # inferance()
+    # training_loop()
+    inferance()

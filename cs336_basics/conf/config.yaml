@@ -1,7 +1,7 @@
 model:
     epochs: 2
     batch_size: 32
-    vocab_size: 10000
+    vocab_size: 32000
     context_length: 256
     device: "cuda"
     backend: "inductor"
@@ -15,10 +15,13 @@ loss_fn:
     name: "CrossEntropyLoss"
 
 data:
-    train_dataset_path: "/opt/dataset/cs336/ts_train.npy"
-    val_dataset_path: "/opt/dataset/cs336/ts_valid.npy"
-    tokenizer_path: "/opt/dataset/cs336/TinyStoriesV2-GPT4-train_tokenzier.pkl"
+    train_dataset_path: "/opt/dataset/cs336/owt_train.npy"
+    val_dataset_path: "/opt/dataset/cs336/owt_valid.npy"
+    tokenizer_path: "/opt/dataset/cs336/owt_train_tokenzier.pkl"
 
 log:
     step: 100
     dir: "/opt/log"
+
+swanlab:
+    exp_name: default

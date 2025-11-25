@@ -643,7 +643,7 @@ class Trainer:
         if train_loss is not None:
             self.swanlab_run.log({"train loss": train_loss})
         if val_loss is not None:
-            self.swanlab_run.log({"val_loss": val_loss})
+            self.swanlab_run.log({"val loss": val_loss})
         if process is not None:
             self.swanlab_run.log({"process": process})
         log_step = self.config.log.step
@@ -660,11 +660,11 @@ class Trainer:
 
 
 class Inference:
-    def __init__(self, model: nn.Module, state_dict, tokenizer: Tokenizer):
+    def __init__(self, model: nn.Module, state_dict, tokenizer: Tokenizer, device="cpu"):
         model.load_state_dict(state_dict)
         self.model = model
         self.tokenizer = tokenizer
-        self.device = "cpu"
+        self.device = device
         self.context_length = 1024
 
     def run(
