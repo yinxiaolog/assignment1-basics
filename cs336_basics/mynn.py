@@ -1,7 +1,5 @@
 import os
 import math
-import json
-from typing import Optional
 from collections.abc import Callable
 
 import torch
@@ -10,7 +8,6 @@ from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import Dataset, DataLoader, DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
-import torch.multiprocessing as mp
 import swanlab
 from .bpe import Tokenizer
 
@@ -46,9 +43,7 @@ class Embedding(nn.Module):
         dtype: torch.dtype | None = None,
     ):
         super().__init__()
-        embedding_matrix = torch.empty(
-            num_embeddings, embedding_dim, device=device, dtype=dtype
-        )
+        embedding_matrix = torch.empty(num_embeddings, embedding_dim, device=device, dtype=dtype)
         nn.init.trunc_normal_(embedding_matrix, mean=0, std=1, a=-3, b=3)
         self.weight = nn.Parameter(embedding_matrix)
 
@@ -122,9 +117,7 @@ class RoPE(nn.Module):
         indices[1::2] = torch.arange(0, n, 2)
         p = p.index_select(-1, indices)
         p[..., torch.arange(0, n, 2)] *= -1
-        return (
-            q * self.cos_rotation[: x.shape[-2]] + p * self.sin_rotation[: x.shape[-2]]
-        )
+        return q * self.cos_rotation[: x.shape[-2]] + p * self.sin_rotation[: x.shape[-2]]
 
     def theta_vec(self, m: int, d: int, theta: float):
         thetas = []
@@ -179,9 +172,9 @@ class CausalMultiHeadSelfAttention(nn.Module):
         super().__init__()
         self.is_apply_rope = is_apply_rope
         self.num_heads = num_heads
-        assert (
-            d_model % self.num_heads == 0
-        ), f"d_model does not match num_heads, d_model={d_model}, num_heads={self.num_heads}"
+        assert d_model % self.num_heads == 0, (
+            f"d_model does not match num_heads, d_model={d_model}, num_heads={self.num_heads}"
+        )
         self.head_dim = d_model // num_heads
         self.attention = Attention()
         self.q_proj = Linear(d_model, d_model)
@@ -193,21 +186,9 @@ class CausalMultiHeadSelfAttention(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         mask = torch.tril(torch.ones(x.shape[1], x.shape[1])).bool()
         mask = mask.unsqueeze(0).unsqueeze(0).tile(x.shape[0], self.num_heads, 1, 1)
-        q = (
-            self.q_proj(x)
-            .reshape(-1, x.shape[1], self.num_heads, self.head_dim)
-            .transpose(1, 2)
-        )
-        k = (
-            self.k_proj(x)
-            .reshape(-1, x.shape[1], self.num_heads, self.head_dim)
-            .transpose(1, 2)
-        )
-        v = (
-            self.v_proj(x)
-            .reshape(-1, x.shape[1], self.num_heads, self.head_dim)
-            .transpose(1, 2)
-        )
+        q = self.q_proj(x).reshape(-1, x.shape[1], self.num_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(x).reshape(-1, x.shape[1], self.num_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(x).reshape(-1, x.shape[1], self.num_heads, self.head_dim).transpose(1, 2)
 
         if self.is_apply_rope:
             q = self.rope(q, None)
@@ -217,15 +198,11 @@ class CausalMultiHeadSelfAttention(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(
-        self, d_model: int, num_heads: int, d_ff: int, max_seq_len: 1024, theta: 0.1
-    ):
+    def __init__(self, d_model: int, num_heads: int, d_ff: int, max_seq_len: 1024, theta: 0.1):
         super().__init__()
         self.ln1 = RMSNorm(d_model)
         self.ln2 = RMSNorm(d_model)
-        self.attn = CausalMultiHeadSelfAttention(
-            d_model, num_heads, True, max_seq_len, theta
-        )
+        self.attn = CausalMultiHeadSelfAttention(d_model, num_heads, True, max_seq_len, theta)
         self.ffn = SwiGLU(d_model, d_ff)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -247,10 +224,7 @@ class TransformerLM(nn.Module):
     ):
         super().__init__()
         self.token_embeddings = Embedding(vocab_size, d_model)
-        blocks = [
-            TransformerBlock(d_model, num_heads, d_ff, context_length, theta)
-            for _ in range(num_layers)
-        ]
+        blocks = [TransformerBlock(d_model, num_heads, d_ff, context_length, theta) for _ in range(num_layers)]
         self.layers = nn.Sequential(*blocks)
         self.ln_final = RMSNorm(d_model)
         self.lm_head = Linear(d_model, vocab_size)
@@ -271,10 +245,7 @@ class CrossEntropyLoss(nn.Module):
 
     def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         input -= torch.max(input, dim=-1, keepdim=True).values
-        loss = (
-            input.gather(-1, target.reshape(-1, 1))
-            - torch.sum(torch.exp(input), dim=-1, keepdim=True).log()
-        )
+        loss = input.gather(-1, target.reshape(-1, 1)) - torch.sum(torch.exp(input), dim=-1, keepdim=True).log()
         return -loss.sum() / input.shape[0]
 
 
@@ -285,7 +256,7 @@ class SGD(torch.optim.Optimizer):
         defaults = {"lr": lr}
         super().__init__(params, defaults)
 
-    def step(self, closure: Optional[Callable] = None):
+    def step(self, closure: Callable | None):
         loss = None if closure is None else closure()
         for group in self.param_groups:
             lr = group["lr"]  # Get the learning rate.
@@ -294,9 +265,7 @@ class SGD(torch.optim.Optimizer):
                 if p.grad is None:
                     continue
                 state = self.state[p]  # Get state associated with p.
-                t = state.get(
-                    "t", 0
-                )  # Get iteration number from the state, or initial value.
+                t = state.get("t", 0)  # Get iteration number from the state, or initial value.
                 grad = p.grad.data  # Get the gradient of loss with respect to p.
                 p.data -= lr / math.sqrt(t + 1) * grad  # Update weight tensor in-place.
                 state["t"] = t + 1  # Increment iteration number.
@@ -314,7 +283,7 @@ class AdamW(torch.optim.Optimizer):
         }
         super().__init__(params, defaults)
 
-    def step(self, closure: Optional[Callable] = None):
+    def step(self, closure: Callable | None):
         loss = None if closure is None else closure()
         for group in self.param_groups:
             lr = group["lr"]
@@ -355,8 +324,7 @@ def cosine_lr(
         return min_learning_rate
 
     return min_learning_rate + 0.5 * (
-        1
-        + math.cos((it - warmup_iters) / (cosine_cycle_iters - warmup_iters) * math.pi)
+        1 + math.cos((it - warmup_iters) / (cosine_cycle_iters - warmup_iters) * math.pi)
     ) * (max_learning_rate - min_learning_rate)
 
 
@@ -371,12 +339,11 @@ class CosineLR(LRScheduler):
         last_epoch=-1,
         verbose="deprecated",
     ):
-
         self.max_learning_rate = max_learning_rate
         self.min_learning_rate = min_learning_rate
         self.warmup_iters = warmup_iters
         self.cosine_cycle_iters = cosine_cycle_iters
-        super().__init__(optimizer, last_epoch, verbose)
+        super().__init__(optimizer, last_epoch)
 
     def get_lr(self):
         it = self.last_epoch
@@ -387,12 +354,7 @@ class CosineLR(LRScheduler):
             lr = self.min_learning_rate
         else:
             lr = self.min_learning_rate + 0.5 * (
-                1
-                + math.cos(
-                    (it - self.warmup_iters)
-                    / (self.cosine_cycle_iters - self.warmup_iters)
-                    * math.pi
-                )
+                1 + math.cos((it - self.warmup_iters) / (self.cosine_cycle_iters - self.warmup_iters) * math.pi)
             ) * (self.max_learning_rate - self.min_learning_rate)
         return [lr for _ in self.optimizer.param_groups]
 
@@ -424,9 +386,9 @@ class LMDataset(Dataset):
         index *= self.stride
         input = self.data[index : index + self.context_length]
         label = self.data[index + 1 : index + 1 + self.context_length]
-        return torch.tensor(input, dtype=torch.long).to(self.device), torch.tensor(
-            label, dtype=torch.long
-        ).to(self.device)
+        return torch.tensor(input, dtype=torch.long).to(self.device), torch.tensor(label, dtype=torch.long).to(
+            self.device
+        )
 
 
 class LMDataLoader(DataLoader): ...
@@ -464,9 +426,7 @@ class Trainer:
         description: str = "default",
         total_tokens_processed=327680000,
     ):
-        self.swanlab_run = swanlab.init(
-            project=project, experiment_name=experiment_name, description=description
-        )
+        self.swanlab_run = swanlab.init(project=project, experiment_name=experiment_name, description=description)
 
         swanlab.config = {"cfg": config}
         print(f"cfg: {config}")
@@ -486,7 +446,6 @@ class Trainer:
             self.optim = AdamW
         else:
             raise Exception(f"not support optimizer: {config.loss_fn.name}")
-        # self.scheduler = CosineLR(self.optim, config.optimizer.lr, 1e-5, warmup_iters=1000, cosine_cycle_iters=30000)
         self.total_tokens_processed = total_tokens_processed
 
     def setup(self):
@@ -512,6 +471,9 @@ class Trainer:
         model = self.model.to(self.rank)
         self.model = DDP(model, device_ids=[self.rank])
         self.optim = self.optim(self.model.parameters(), lr=self.config.optimizer.lr)
+        self.scheduler = CosineLR(
+            self.optim, self.config.optimizer.lr, 1e-5, warmup_iters=1000, cosine_cycle_iters=30000
+        )
 
         if checkpoint_path is not None:
             step = load_checkpoint(checkpoint_path, self.model, self.optim)
@@ -522,26 +484,18 @@ class Trainer:
                 loss = self.train_one_step(x, y)
                 step += 1
                 processed_token = (
-                    self.config.model.batch_size
-                    * step
-                    * self.config.model.context_length
-                    * self.world_size
+                    self.config.model.batch_size * step * self.config.model.context_length * self.world_size
                 )
                 process = processed_token / self.total_tokens_processed
 
-                if (
-                    self.total_tokens_processed > 0
-                    and processed_token >= self.total_tokens_processed
-                ):
+                if self.total_tokens_processed > 0 and processed_token >= self.total_tokens_processed:
                     exit(0)
                 if step % 1000 == 0:
                     save_checkpoint(
                         self.model,
                         self.optim,
                         step,
-                        path=os.path.join(
-                            self.config.log.dir, f"model_optim_step_{step}.pth"
-                        ),
+                        path=os.path.join(self.config.log.dir, f"model_optim_step_{step}.pth"),
                     )
 
                 val_loss = self.val() if step % 100 == 0 else None
@@ -562,7 +516,7 @@ class Trainer:
         self.optim.zero_grad()
         loss.backward()
         self.optim.step()
-        # self.scheduler.step()
+        self.scheduler.step()
         loss_tensor = loss.detach()
         dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
         loss_tensor /= dist.get_world_size()
@@ -628,18 +582,14 @@ class Trainer:
                 idx_next = torch.multinomial(prob, num_samples=1)
             else:
                 idx_next = torch.argmax(logits, dim=-1, keepdim=True)
-            if (
-                idx_next.item()
-                == self.tokenizer.token_2_id["<|endoftext|>".encode(encoding="utf-8")]
-            ):
+            if idx_next.item() == self.tokenizer.token_2_id[b"<|endoftext|>"]:
                 break
             idx = torch.cat((idx, idx_next), dim=1)
         return self.tokenizer.decode(idx.reshape(-1).tolist())
-    
+
     def log(self, epoch: int, step: int, train_loss=None, val_loss=None, process=None):
         if self.rank != 0:
             return
-
         if train_loss is not None:
             self.swanlab_run.log({"train loss": train_loss})
         if val_loss is not None:
@@ -697,12 +647,7 @@ class Inference:
                     idx_next = torch.multinomial(prob, num_samples=1)
                 else:
                     idx_next = torch.argmax(logits, dim=-1, keepdim=True)
-                if (
-                    idx_next.item()
-                    == self.tokenizer.token_2_id[
-                        "<|endoftext|>".encode(encoding="utf-8")
-                    ]
-                ):
+                if idx_next.item() == self.tokenizer.token_2_id[b"<|endoftext|>"]:
                     pass
                 idx = torch.cat((idx, idx_next), dim=1)
         return self.tokenizer.decode(idx.reshape(-1).tolist())

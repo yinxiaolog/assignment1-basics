@@ -6,6 +6,7 @@ model:
     device: "cuda"
     backend: "inductor"
     world_size: 1
+    total_tokens_processed: 3276800000
 
 optimizer:
     name: "AdamW"
@@ -15,9 +16,9 @@ loss_fn:
     name: "CrossEntropyLoss"
 
 data:
-    train_dataset_path: "/opt/dataset/cs336/owt_train.npy"
-    val_dataset_path: "/opt/dataset/cs336/owt_valid.npy"
-    tokenizer_path: "/opt/dataset/cs336/owt_train_tokenzier.pkl"
+    train_dataset_path: "/opt/datasets/cs336/owt_train.npy"
+    val_dataset_path: "/opt/datasets/cs336/owt_valid.npy"
+    tokenizer_path: "/opt/datasets/cs336/owt_train_tokenzier.pkl"
 
 log:
     step: 100

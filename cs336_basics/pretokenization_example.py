@@ -2,16 +2,12 @@ import os
 from typing import BinaryIO
 
 
-def find_chunk_boundaries(
-    file: BinaryIO, desired_num_chunks: int, split_special_token: bytes
-) -> list[int]:
+def find_chunk_boundaries(file: BinaryIO, desired_num_chunks: int, split_special_token: bytes) -> list[int]:
     """
     Chunk the file into parts that can be counted independently.
     May return fewer chunks if the boundaries end up overlapping.
     """
-    assert isinstance(
-        split_special_token, bytes
-    ), "Must represent special token as a bytestring"
+    assert isinstance(split_special_token, bytes), "Must represent special token as a bytestring"
 
     # Get total file size in bytes
     file.seek(0, os.SEEK_END)

@@ -33,15 +33,10 @@ def transformer_accounting(
     )
 
     params_account = sum(param.numel() for param in model.parameters())
-    print(
-        f"parameters: {params_account / 1000000}M memory: {params_account * 4 / 1024 / 1024} MB"
-    )
+    print(f"parameters: {params_account / 1000000}M memory: {params_account * 4 / 1024 / 1024} MB")
 
     qkvo_proj = 8 * context_length * d_model * d_model
-    attention = (
-        2 * context_length * context_length * d_model
-        + 2 * context_length * context_length * d_model
-    )
+    attention = 2 * context_length * context_length * d_model + 2 * context_length * context_length * d_model
     ffn = 4 * context_length * d_model * d_ff + 2 * context_length * d_model * d_ff
     final_linear = 2 * context_length * d_model * vocab_size
 
@@ -155,6 +150,7 @@ def training_loop(cfg: DictConfig):
         project="cs336_basics",
         experiment_name=f"train_owt lr={cfg.optimizer.lr}, batch_size={cfg.model.batch_size}",
         description="training owt",
+        total_tokens_processed=cfg.model.total_tokens_processed,
     )
     trainer.run()
 
@@ -169,9 +165,7 @@ def inferance():
         d_ff=6400,
         theta=10000,
     )
-    tokenizer: Tokenizer = load_tokenizer(
-        "/opt/dataset/cs336/owt_train_tokenzier.pkl"
-    )
+    tokenizer: Tokenizer = load_tokenizer("/opt/dataset/cs336/owt_train_tokenzier.pkl")
     infer = Inference(
         model,
         torch.load("/opt/log/model_optim_step_111000.pth")["model"],
@@ -187,5 +181,5 @@ def inferance():
 
 if __name__ == "__main__":
     # print(len(np.load(file="/opt/code/cs336/assignment1-basics/ts_train.npy", mmap_mode="r")))
-    # training_loop()
-    inferance()
+    training_loop()
+    # inferance()

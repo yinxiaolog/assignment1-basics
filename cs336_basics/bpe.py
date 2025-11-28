@@ -1,11 +1,9 @@
 import collections
 import time
 from pathlib import Path
-import json
 import os
 import pickle
 from concurrent.futures import ProcessPoolExecutor
-import cProfile
 from typing import Iterable, Iterator
 import regex as re
 import numpy as np
@@ -118,9 +116,7 @@ def train_bpe(
             for k, v in cor.items():
                 corpus[k] += v
 
-    for i in track(
-        range(vocab_size - 256 - len(special_tokens)), description="Mergeing..."
-    ):
+    for i in track(range(vocab_size - 256 - len(special_tokens)), description="Mergeing..."):
         start = len(special_tokens) + 256
         best = pair(pre_tokens)
         merges.append(best)
@@ -163,7 +159,6 @@ class Tokenizer:
     ) -> any:
         print("vocab_filepath", vocab_filepath)
         print("merges_filepath", merges_filepath)
-        vocab = {}
         with open(vocab_filepath) as f:
             f.read()
 
@@ -247,9 +242,7 @@ class Tokenizer:
     def apply_merges_one(self, pre_token: list):
         while True:
             # print(pre_token)
-            pairs = [
-                (pre_token[i], pre_token[i + 1]) for i in range(len(pre_token) - 1)
-            ]
+            pairs = [(pre_token[i], pre_token[i + 1]) for i in range(len(pre_token) - 1)]
             # print(pairs)
             if len(pairs) == 0:
                 break
@@ -265,10 +258,7 @@ class Tokenizer:
             new_pre_token = []
             i = 0
             while i < len(pre_token):
-                if (
-                    i < len(pre_token) - 1
-                    and (pre_token[i], pre_token[i + 1]) == best_merge[0]
-                ):
+                if i < len(pre_token) - 1 and (pre_token[i], pre_token[i + 1]) == best_merge[0]:
                     new_pre_token.append(best_merge[0][0] + best_merge[0][1])
                     i += 1
                 else:
@@ -338,9 +328,7 @@ def tokenizer_experiments_a(num_sample=10):
     owt_sample_bytes = sum([len(sample.encode("utf-8")) for sample in owt_sample])
     ts_num_encode = len(ts_tokenizer.encode_docs(ts_sample, ts_tokenizer))
     owt_num_encode = len(owt_tokenizer.encode_docs(owt_sample, owt_tokenizer))
-    print(
-        f"ts: {ts_sample_bytes / ts_num_encode} owt: {owt_sample_bytes / owt_num_encode}"
-    )
+    print(f"ts: {ts_sample_bytes / ts_num_encode} owt: {owt_sample_bytes / owt_num_encode}")
 
 
 def tokenizer_experiments_b(num_sample=10):
@@ -373,15 +361,15 @@ def tokenizer_experiments_d():
     ts_valid = "/opt/dataset/cs336/assignment1-basics/TinyStoriesV2-GPT4-valid.txt"
     owt_file = "/opt/dataset/cs336/assignment1-basics/owt_train.txt"
     owt_valid = "/opt/dataset/cs336/assignment1-basics/owt_valid.txt"
-    #ts_tokenizer = load_tokenizer(ts_file)
+    # ts_tokenizer = load_tokenizer(ts_file)
     owt_tokenizer = load_tokenizer("/opt/dataset/cs336/owt_train_tokenzier.pkl")
     # ts_valid_encoded = ts_tokenizer.encode_file(ts_valid)
     # np.save(f"ts_valid.npy", np.array(ts_valid_encoded, dtype=np.uint16))
     # ts_train_encoded = ts_tokenizer.encode_file(ts_file)
     # np.save(f"ts_train.npy", np.array(ts_train_encoded, dtype=np.uint16))
-    #owt_train_encoded = owt_tokenizer.encode_file(owt_file)
+    # owt_train_encoded = owt_tokenizer.encode_file(owt_file)
     owt_valid_encoded = owt_tokenizer.encode_file(owt_valid)
-    #np.save(f"owt_train.npy", np.array(owt_train_encoded, dtype=np.uint16))
+    # np.save(f"owt_train.npy", np.array(owt_train_encoded, dtype=np.uint16))
     np.save(f"owt_valid.npy", np.array(owt_valid_encoded, dtype=np.uint16))
 
 
